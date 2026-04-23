@@ -11,8 +11,8 @@
 #   - Creating users from CSV
 #   - Updating users from CSV
 #   - Deleting users from TXT or CSV
-#   - Listing all users with their roles
-#   - Listing all users for a given role
+#   - Listing all users
+#   - Listing all roles
 #
 # Author: Sascha Jelinek, ADMIN INTELLIGENCE GmbH
 # Website: https://www.admin-intelligence.de
@@ -788,17 +788,13 @@ process_user_list() {
   users_json="$(get_all_users)"
 
   # CSV header to stdout
-  printf 'id;name;email;roles\n'
+  printf 'id;name;email\n'
 
   jq -c '.[]' <<<"$users_json" | while read -r user; do
     id="$(jq -r '.id' <<<"$user")"
     name="$(jq -r '.name' <<<"$user")"
     email="$(jq -r '.email' <<<"$user")"
-    roles_list="$(
-      jq -r '[.roles[]? | (.display_name // .name // ("ID:" + (.id|tostring)))] | join(",")' \
-        <<<"$user"
-    )"
-    printf '%s;%s;%s;%s\n' "$id" "$name" "$email" "$roles_list"
+    printf '%s;%s;%s\n' "$id" "$name" "$email"
   done
 }
 
@@ -820,32 +816,6 @@ process_role_list() {
     desc="$(jq -r '.description // ""' <<<"$role")"
     printf '%s;%s;%s\n' "$id" "$name" "$desc"
   done
-}
-
-process_role_users() {
-  local role_name="$1" role_id users_json user id name email roles_list
-
-  msg_header "Users for role: $role_name"
-
-  role_id="$(get_role_id_by_name "$role_name" || true)"
-  [[ -n "$role_id" ]] || die "Role not found: $role_name"
-
-  users_json="$(get_all_users)"
-
-  # CSV header to stdout
-  printf 'id;name;email;roles\n'
-
-  jq -c --argjson rid "$role_id" '.[] | select([.roles[]?.id] | index($rid) != null)' \
-    <<<"$users_json" | while read -r user; do
-      id="$(jq -r '.id' <<<"$user")"
-      name="$(jq -r '.name' <<<"$user")"
-      email="$(jq -r '.email' <<<"$user")"
-      roles_list="$(
-        jq -r '[.roles[]? | (.display_name // .name // ("ID:" + (.id|tostring)))] | join(",")' \
-          <<<"$user"
-      )"
-      printf '%s;%s;%s;%s\n' "$id" "$name" "$email" "$roles_list"
-    done
 }
 
 # =============================
@@ -873,7 +843,6 @@ EOF
   role-add    - Add users to a target role (TXT or CSV)
   role-remove - Remove users from a source role (TXT or CSV)
   role-move   - Move users from a source role to a target role (TXT or CSV)
-  role-users  - List users that have a given role (CSV to stdout)
   role-list   - List all roles (CSV to stdout)
   user-create - Create users from a CSV file (CSV only)
   user-update - Update existing users from a CSV file (CSV only)
@@ -896,7 +865,7 @@ EOF
 
   --export
       Mark this run as an export. Intended for list modes (user-list,
-      role-users) where CSV is printed to stdout. Has no effect on
+      role-list) where CSV is printed to stdout. Has no effect on
       write modes.
 
   -h | --help | -?
@@ -939,9 +908,6 @@ role-add / role-remove / role-move:
   - when CSV is used, only the 'email' column is read
   - source/target roles must exist, otherwise the run aborts before changes
 
-role-users:
-  - read-only mode, lists all users that have a given role as semicolon CSV
-
 role-list:
   - read-only mode, lists all roles as semicolon CSV
   - columns: id;name;description
@@ -974,7 +940,6 @@ EOF
   $(basename "$0") user-update users.csv
   $(basename "$0") --yes user-delete users.csv
   $(basename "$0") user-list > all-users.csv
-  $(basename "$0") role-users "Editors" > editors-users.csv
   $(basename "$0") --log-csv log.csv role-remove "Wiki-Reader" users.csv
   $(basename "$0") role-list > roles.csv
 EOF
@@ -1047,10 +1012,6 @@ main() {
     user-list)
       [[ $# -eq 0 ]] || die "Usage: $(basename "$0") user-list"
       ;;
-    role-users)
-      [[ $# -eq 1 ]] || die "Usage: $(basename "$0") role-users <role-name>"
-      TARGET_ROLE_NAME="$1"
-      ;;
     role-list)
       [[ $# -eq 0 ]] || die "Usage: $(basename "$0") role-list"
       ;;
@@ -1073,14 +1034,14 @@ main() {
   init_log
   api_preflight_check
 
-  # Resolve source/target roles if provided (for role-* and role-users).
+  # Resolve source/target roles if provided (for role-*).
   SOURCE_ROLE_ID=""
   TARGET_ROLE_ID=""
   if [[ -n "$SOURCE_ROLE_NAME" ]]; then
     SOURCE_ROLE_ID="$(get_role_id_by_name "$SOURCE_ROLE_NAME" || true)"
     [[ -n "$SOURCE_ROLE_ID" ]] || die "Source role not found: $SOURCE_ROLE_NAME"
   fi
-  if [[ -n "$TARGET_ROLE_NAME" && "$MODE" != "role-users" ]]; then
+  if [[ -n "$TARGET_ROLE_NAME" ]]; then
     TARGET_ROLE_ID="$(get_role_id_by_name "$TARGET_ROLE_NAME" || true)"
     [[ -n "$TARGET_ROLE_ID" ]] || die "Target role not found: $TARGET_ROLE_NAME"
   fi
@@ -1107,7 +1068,7 @@ main() {
   if [[ -n "$SOURCE_ROLE_NAME" ]]; then
     msg_info "Source role: $SOURCE_ROLE_NAME (ID: $SOURCE_ROLE_ID)"
   fi
-  if [[ -n "$TARGET_ROLE_NAME" && "$MODE" != "role-users" ]]; then
+  if [[ -n "$TARGET_ROLE_NAME" ]]; then
     msg_info "Target role: $TARGET_ROLE_NAME (ID: $TARGET_ROLE_ID)"
   fi
   echo
@@ -1115,7 +1076,7 @@ main() {
   # Note: --export is informational for list modes; it has no effect on writes.
   if [[ "$EXPORT_MODE" -eq 1 ]]; then
     case "$MODE" in
-      user-list|role-users) ;;  # OK
+      user-list|role-list) ;;  # OK
       *) msg_warn "--export has no effect on write modes." ;;
     esac
   fi
@@ -1143,9 +1104,6 @@ main() {
     user-list)
       process_user_list
       ;;
-    role-users)
-      process_role_users "$TARGET_ROLE_NAME"
-      ;;
     role-list)
       process_role_list
       ;;
@@ -1165,7 +1123,7 @@ main() {
         msg_ok "Errors: 0"
       fi
       ;;
-    user-list|role-users|role-list)
+    user-list|role-list)
       : # read-only: CSV output is the result
       ;;
   esac

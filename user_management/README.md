@@ -29,7 +29,6 @@ The script uses API tokens via the header `Authorization: Token <id>:<secret>`, 
 
 - **Listing / export**:
   - `user-list` – list all users with their roles (semicolon CSV to stdout)
-  - `role-users` – list users that have a given role (semicolon CSV to stdout)
   - `role-list` – list all roles (semicolon CSV to stdout)
 
 - **Safety & tooling**:
@@ -112,7 +111,7 @@ Basic syntax:
   Write a CSV log containing timestamp, mode, status, user and role data, and JSON payload for each processed entry.
 
 - `--export`  
-  Mark the run as an export. Intended for list modes (`user-list`, `role-users`) where semicolon CSV is printed to stdout. Has no effect on write modes.
+  Mark the run as an export. Intended for list modes (`user-list`, `role-list`) where semicolon CSV is printed to stdout. Has no effect on write modes.
 
 - `-h`, `--help`, `-?`  
   Show built‑in CLI help.
@@ -225,20 +224,6 @@ Move users from one role to another.
 - Accepts TXT or CSV.
 - Source and target roles must exist.
 - Removes the source role and adds the target role for each user.
-
-### `role-users`
-
-List users that have a given role.
-
-```bash
-./bookstack-manage-users.sh --export role-users "Editors" > editors-users.csv
-```
-
-Behavior:
-
-- Read‑only mode.
-- Resolves the given role name to a role ID.
-- Outputs a semicolon‑separated CSV with `id;name;email;roles` for all users that have that role.
 
 ### `role-list`
 
@@ -385,12 +370,6 @@ Export all users with their roles:
 
 ```bash
 ./bookstack-manage-users.sh --export user-list > all-users.csv
-```
-
-Export all users that have the `Editors` role:
-
-```bash
-./bookstack-manage-users.sh --export role-users "Editors" > editors-users.csv
 ```
 
 Export all roles:
