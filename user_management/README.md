@@ -6,8 +6,8 @@ Bash utility to manage [BookStack](https://www.bookstackapp.com/) users and role
 - Creating users from CSV
 - Updating existing users from CSV
 - Deleting users from TXT or CSV
-- Listing all users with their roles
-- Listing users that have a given role
+- Listing all users
+- Listing all roles
 
 The script uses API tokens via the header `Authorization: Token <id>:<secret>`, as documented in the BookStack API reference.
 
