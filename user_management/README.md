@@ -6,10 +6,12 @@ Bash utility to manage [BookStack](https://www.bookstackapp.com/) users and role
 - Creating users from CSV
 - Updating existing users from CSV
 - Deleting users from TXT or CSV
+- Listing all users with their roles
+- Listing users that have a given role
 
-The script uses API tokens via the header `Authorization: Token <id>:<secret>`, as documented in the BookStack API documentation.
+The script uses API tokens via the header `Authorization: Token <id>:<secret>`, as documented in the BookStack API reference.
 
-> **Status:** Tested with BookStack’s user and role API endpoints; requires a user with the `Access System API` permission.
+> **Status:** Tested against the user and role endpoints of the BookStack API. Requires a user with the `Access System API` permission.
 
 ---
 
@@ -25,8 +27,14 @@ The script uses API tokens via the header `Authorization: Token <id>:<secret>`, 
   - `user-update` – update existing users from a semicolon‑separated CSV file
   - `user-delete` – delete users based on a TXT or CSV file
 
+- **Listing / export**:
+  - `user-list` – list all users with their roles (semicolon CSV to stdout)
+  - `role-users` – list users that have a given role (semicolon CSV to stdout)
+  - `role-list` – list all roles (semicolon CSV to stdout)
+
 - **Safety & tooling**:
   - `--dry-run` to simulate changes without writing anything
+  - `--export` to mark runs that are used purely for export (list modes)
   - `--log-csv` to write a detailed audit log
   - API preflight check (`/api/users?count=1`) before doing any work
 
@@ -56,8 +64,8 @@ CSV parsing is done with Python’s `csv.DictReader` using `delimiter=';'`, whic
 Clone this repository and make the script executable:
 
 ```bash
-git clone https://github.com/your-org/bookstack-user-management.git
-cd bookstack-user-management
+git clone https://github.com/ADMIN-INTELLIGENCE-GmbH/Bookstack.git
+cd Bookstack/user_management
 chmod +x bookstack-manage-users.sh
 ```
 
@@ -65,7 +73,7 @@ chmod +x bookstack-manage-users.sh
 
 ## Configuration
 
-The script uses the following environment variables:
+Set the following environment variables before running the script:
 
 ```bash
 export BOOKSTACK_URL="http://127.0.0.1"
@@ -102,6 +110,9 @@ Basic syntax:
 
 - `--log-csv <file.csv>`  
   Write a CSV log containing timestamp, mode, status, user and role data, and JSON payload for each processed entry.
+
+- `--export`  
+  Mark the run as an export. Intended for list modes (`user-list`, `role-users`) where semicolon CSV is printed to stdout. Has no effect on write modes.
 
 - `-h`, `--help`, `-?`  
   Show built‑in CLI help.
@@ -150,12 +161,12 @@ Erika Musterfrau;erika.musterfrau@example.com;;"Editors"
 
 Rules:
 
-- `name` – User’s display name.
-- `email` – Plain email address (no markdown, no `mailto:`).
-- `password` – Plain password:
+- `name` – user’s display name.
+- `email` – plain email address (no markdown, no `mailto:`).
+- `password` – plain password:
   - For `user-create`: If empty, the script generates a strong password automatically.
   - For `user-update`: If empty, the existing password is left unchanged.
-- `roles` – Comma‑separated list of **role names** (not IDs), e.g. `"Staff,Wiki-Reader"`.
+- `roles` – comma‑separated list of **role names** (not IDs), e.g. `"Staff,Wiki-Reader"`.
 
 If `roles` contains multiple roles, the field must be quoted to keep the comma as part of the field (standard CSV convention).
 
@@ -188,7 +199,7 @@ Add users to a target role.
 
 - Accepts TXT or CSV.
 - For CSV, only the `email` column is used.
-- The target role is resolved by display name to its role ID via the BookStack roles API.
+- The target role is resolved by display name to its role ID via the roles API.
 - Existing roles are preserved; the target role is added if missing.
 
 ### `role-remove`
@@ -212,8 +223,36 @@ Move users from one role to another.
 ```
 
 - Accepts TXT or CSV.
-- Source role must exist; target role must exist.
+- Source and target roles must exist.
 - Removes the source role and adds the target role for each user.
+
+### `role-users`
+
+List users that have a given role.
+
+```bash
+./bookstack-manage-users.sh --export role-users "Editors" > editors-users.csv
+```
+
+Behavior:
+
+- Read‑only mode.
+- Resolves the given role name to a role ID.
+- Outputs a semicolon‑separated CSV with `id;name;email;roles` for all users that have that role.
+
+### `role-list`
+
+List all roles.
+
+```bash
+./bookstack-manage-users.sh --export role-list > roles.csv
+```
+
+Behavior:
+
+- Read‑only mode.
+- Outputs a semicolon‑separated CSV with columns: `id;name;description`.
+- `name` is the role display name, `description` is the optional role description from BookStack.
 
 ### `user-create`
 
@@ -265,6 +304,20 @@ Behavior:
 - Each email is resolved to a user ID; deletion is done via `/api/users/{id}`.
 - A confirmation prompt is shown unless `--yes` or `--dry-run` is used.
 
+### `user-list`
+
+List all users with their roles.
+
+```bash
+./bookstack-manage-users.sh --export user-list > all-users.csv
+```
+
+Behavior:
+
+- Read‑only mode.
+- Outputs a semicolon‑separated CSV with columns: `id;name;email;roles`.
+- `roles` is a comma‑separated list of role display names for each user.
+
 ---
 
 ## Dry-Run and Logging
@@ -298,7 +351,7 @@ The log CSV contains:
 - Roles before / after (where applicable)
 - JSON payload
 
-You can open the log in Excel/LibreOffice or feed it into other tooling to audit changes.
+The log is CSV-escaped, so it can be opened in Excel/LibreOffice or imported into other tools.
 
 ---
 
@@ -326,6 +379,24 @@ Delete users defined in a CSV file:
 
 ```bash
 ./bookstack-manage-users.sh --yes user-delete users.csv
+```
+
+Export all users with their roles:
+
+```bash
+./bookstack-manage-users.sh --export user-list > all-users.csv
+```
+
+Export all users that have the `Editors` role:
+
+```bash
+./bookstack-manage-users.sh --export role-users "Editors" > editors-users.csv
+```
+
+Export all roles:
+
+```bash
+./bookstack-manage-users.sh --export role-list > roles.csv
 ```
 
 ---

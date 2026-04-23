@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 #
 # BookStack user & role management via API
-# Version: 1.0.0
-# Date: 2026-04-22
+# Version: 1.1.0
+# Date: 2026-04-23
 #
 # This script manages BookStack users and roles using the official REST API.
 # It supports:
@@ -11,6 +11,8 @@
 #   - Creating users from CSV
 #   - Updating users from CSV
 #   - Deleting users from TXT or CSV
+#   - Listing all users with their roles
+#   - Listing all users for a given role
 #
 # Author: Sascha Jelinek, ADMIN INTELLIGENCE GmbH
 # Website: https://www.admin-intelligence.de
@@ -34,8 +36,9 @@ API_LIST_COUNT=500
 
 # Logging & behavior flags.
 LOG_CSV=""
-ASSUME_YES=0           # Auto-confirm destructive operations if 1.
-DRY_RUN=0              # If 1, do not perform write operations.
+ASSUME_YES=0           # auto-confirm destructive ops
+DRY_RUN=0              # simulate write operations
+EXPORT_MODE=0          # mark run as export (for list modes)
 GENERATE_PASSWORD_LENGTH=20
 
 # Record separator used between Python and Bash to preserve empty fields.
@@ -80,7 +83,6 @@ die() { msg_error "$*"; exit 1; }
 # =============================
 
 trim() {
-  # Trim leading/trailing whitespace.
   local s="$1"
   s="${s#"${s%%[![:space:]]*}"}"
   s="${s%"${s##*[![:space:]]}"}"
@@ -88,7 +90,6 @@ trim() {
 }
 
 csv_escape() {
-  # Escape text for CSV (double quotes, remove newlines).
   local s="$1"
   s=${s//$'\r'/ }
   s=${s//$'\n'/ }
@@ -97,7 +98,6 @@ csv_escape() {
 }
 
 now_ts() {
-  # Return current timestamp for logs.
   date '+%Y-%m-%d %H:%M:%S'
 }
 
@@ -106,7 +106,6 @@ now_ts() {
 # =============================
 
 init_log() {
-  # Create CSV log header when log file does not yet exist.
   [[ -z "$LOG_CSV" ]] && return 0
   if [[ ! -f "$LOG_CSV" ]]; then
     printf 'timestamp,mode,target,status,message,user_name,email,user_id,roles_before,roles_after,payload\n' > "$LOG_CSV"
@@ -114,7 +113,6 @@ init_log() {
 }
 
 write_log() {
-  # Append a single line to CSV log.
   [[ -z "$LOG_CSV" ]] && return 0
   local timestamp="$1" mode="$2" target="$3" status="$4" message="$5"
   local user_name="$6" email="$7" user_id="$8" roles_before="$9"
@@ -139,7 +137,6 @@ write_log() {
 # =============================
 
 validate_email_plain() {
-  # Validate that a string is a plain email address (no markdown, no mailto).
   local email="$1"
   [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]
 }
@@ -149,7 +146,6 @@ validate_email_plain() {
 # =============================
 
 api_request() {
-  # Generic curl wrapper, stores last body & HTTP status.
   local method="$1" path="$2" body="${3-}"
   local tmp_body http_code curl_rc
   tmp_body="$(mktemp)"
@@ -179,7 +175,6 @@ api_request() {
 }
 
 api_error_message() {
-  # Extract a meaningful error message from last API body/status.
   local body="${API_LAST_BODY:-}"
   local code="${API_LAST_HTTP_CODE:-unknown}"
   local msg
@@ -197,7 +192,6 @@ api_put()    { api_request PUT "$1" "$2" || return $?; printf "%s" "$API_LAST_BO
 api_delete() { api_request DELETE "$1" || return $?; printf "%s" "$API_LAST_BODY"; }
 
 api_preflight_check() {
-  # Perform a simple GET /api/users?count=1 to verify URL, token and permissions.
   local ok=0
 
   if [[ "$BOOKSTACK_URL" == "" || "$BOOKSTACK_URL" == "https://bookstack.example.com" || \
@@ -237,7 +231,6 @@ EOF
 # =============================
 
 get_role_id_by_name() {
-  # Resolve a role display name to its BookStack role ID.
   local role_name="$1" encoded
   encoded="$(printf '%s' "$role_name" | jq -sRr @uri)"
   api_get "/api/roles?count=${API_LIST_COUNT}&filter[display_name]=${encoded}" \
@@ -246,7 +239,6 @@ get_role_id_by_name() {
 }
 
 get_user_by_email() {
-  # Fetch a user by email using /api/users with filter[email].
   local email="$1" encoded
   encoded="$(printf '%s' "$email" | jq -sRr @uri)"
   api_get "/api/users?count=${API_LIST_COUNT}&filter[email]=${encoded}" \
@@ -255,9 +247,32 @@ get_user_by_email() {
 }
 
 get_user_detail() {
-  # Fetch full user details including roles.
   local user_id="$1"
   api_get "/api/users/${user_id}"
+}
+
+get_all_users() {
+  # Fetch all users using pagination.
+  local page=1
+  local result data count
+  local users_json='[]'
+
+  while :; do
+    result="$(api_get "/api/users?count=${API_LIST_COUNT}&page=${page}" 2>/dev/null || true)"
+    [[ -z "$result" ]] && break
+
+    data="$(jq -c '.data // []' <<<"$result")"
+    count="$(jq -r '.data | length' <<<"$result")"
+
+    users_json="$(jq -c --argjson chunk "$data" '. + $chunk' <<<"$users_json")"
+
+    if [[ "$count" -lt "$API_LIST_COUNT" ]]; then
+      break
+    fi
+    ((page++))
+  done
+
+  printf '%s' "$users_json"
 }
 
 # =============================
@@ -265,7 +280,6 @@ get_user_detail() {
 # =============================
 
 generate_password() {
-  # Generate a strong random password using Python's secrets module.
   command -v python3 >/dev/null 2>&1 || die "python3 is required to generate passwords."
   python3 - <<PY
 import secrets, string
@@ -300,11 +314,8 @@ resolve_roles_to_ids_json() {
     role="$(trim "$raw_role")"
     [[ -z "$role" ]] && continue
     role_id="$(get_role_id_by_name "$role" 2>/dev/null || true)"
-    if [[ -z "${role_id:-}" ]]; then
-      # For user-create we want to ignore unknown roles silently.
-      # So do NOT echo any warning here; just skip.
-      continue
-    fi
+    # If the role does not exist, silently skip. Handling is done by caller.
+    [[ -z "${role_id:-}" ]] && continue
     ids_json="$(jq -c --argjson rid "$role_id" '. + [$rid] | unique' <<<"$ids_json")"
   done
 
@@ -316,8 +327,8 @@ resolve_roles_to_ids_json() {
 # =============================
 
 load_csv_rows() {
-  # Read user-create/update CSV (semicolon-separated) and emit four fields
-  # separated by RECORD_SEP to Bash: name, email, password, roles.
+  # Read user-create/update CSV and emit name, email, password, roles
+  # separated by RECORD_SEP to Bash.
   local csv_file="$1"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for CSV parsing."
   python3 - <<'PY' "$csv_file"
@@ -346,7 +357,6 @@ with open(path, newline='', encoding='utf-8-sig') as f:
         password = (row.get('password') or '').replace('\t', ' ').strip()
         roles = (row.get('roles') or '').replace('\t', ' ').strip()
 
-        # Extract first email from field (tolerates e.g. copied markdown links).
         m = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,})', email_raw)
         if m:
             email = m.group(1)
@@ -363,8 +373,6 @@ PY
 # =============================
 
 extract_emails_from_input() {
-  # For TXT: return file contents line-by-line.
-  # For CSV: return just the email column (semicolon-separated).
   local input_file="$1"
 
   case "${input_file##*.}" in
@@ -411,7 +419,6 @@ PY
 # =============================
 
 confirm_delete() {
-  # Ask once before deleting users unless --yes or --dry-run is used.
   if [[ "$ASSUME_YES" -eq 1 ]] || [[ "$DRY_RUN" -eq 1 ]]; then
     return 0
   fi
@@ -425,7 +432,6 @@ confirm_delete() {
 # =============================
 
 process_role_change_user() {
-  # Apply role-add / role-remove / role-move for a single user identified by email.
   local mode="$1" email="$2" source_role_id="$3" target_role_id="$4"
   local ts
   ts="$(now_ts)"
@@ -525,7 +531,6 @@ process_role_change_user() {
 # =============================
 
 process_user_create_or_update_csv() {
-  # Process a full CSV for user-create or user-update.
   local mode="$1" csv_file="$2"
   local name email password roles generated_password roles_json payload
   local existing_user_json user_id user_name detail_json current_roles_json ts
@@ -580,13 +585,12 @@ process_user_create_or_update_csv() {
       continue
     fi
 
-    # Resolve roles from CSV names to role IDs.
     roles_json='[]'
     if [[ -n "$(trim "$roles")" ]]; then
       roles_json="$(resolve_roles_to_ids_json "$roles" | tr -d '\r')"
       if ! jq -e . >/dev/null 2>&1 <<<"$roles_json"; then
         msg_error "roles_json is not valid JSON: $roles_json"
-        write_log ...
+        write_log "$ts" "$mode" "$csv_file" "error" "roles_json invalid" "$name" "$email" "" "" "" "$roles_json"
         ((ERROR_COUNT++))
         echo
         continue
@@ -596,7 +600,9 @@ process_user_create_or_update_csv() {
           msg_warn "None of the requested roles exist, user will be created without extra roles"
         else
           msg_error "None of the requested roles exist, user update aborted"
-          ...
+          write_log "$ts" "$mode" "$csv_file" "error" "No roles exist" "$name" "$email" "$(jq -r '.id' <<<"$existing_user_json")" "" "" ""
+          ((ERROR_COUNT++))
+          echo
           continue
         fi
       fi
@@ -657,7 +663,6 @@ process_user_create_or_update_csv() {
       fi
 
     else
-      # user-update path
       user_id="$(jq -r '.id' <<<"$existing_user_json")"
       user_name="$(jq -r '.name // "<no name>"' <<<"$existing_user_json")"
       detail_json="$(get_user_detail "$user_id" 2>/dev/null || true)"
@@ -709,7 +714,6 @@ process_user_create_or_update_csv() {
 # =============================
 
 process_user_delete_file() {
-  # Delete users from TXT or CSV input.
   local input_file="$1"
   local email user_json user_id user_name ts next_line
 
@@ -774,13 +778,84 @@ process_user_delete_file() {
 }
 
 # =============================
+# Listing users and role members
+# =============================
+
+process_user_list() {
+  local users_json user id name email roles_list
+
+  msg_header "Listing users"
+  users_json="$(get_all_users)"
+
+  # CSV header to stdout
+  printf 'id;name;email;roles\n'
+
+  jq -c '.[]' <<<"$users_json" | while read -r user; do
+    id="$(jq -r '.id' <<<"$user")"
+    name="$(jq -r '.name' <<<"$user")"
+    email="$(jq -r '.email' <<<"$user")"
+    roles_list="$(
+      jq -r '[.roles[]? | (.display_name // .name // ("ID:" + (.id|tostring)))] | join(",")' \
+        <<<"$user"
+    )"
+    printf '%s;%s;%s;%s\n' "$id" "$name" "$email" "$roles_list"
+  done
+}
+
+process_role_list() {
+  local result roles_json role id name desc
+
+  msg_header "Listing roles"
+
+  # Fetch all roles in a single call; API typically supports count param.
+  result="$(api_get "/api/roles?count=${API_LIST_COUNT}" 2>/dev/null || true)"
+  roles_json="$(jq -c '.data // []' <<<"$result")"
+
+  # CSV header
+  printf 'id;name;description\n'
+
+  jq -c '.[]' <<<"$roles_json" | while read -r role; do
+    id="$(jq -r '.id' <<<"$role")"
+    name="$(jq -r '.display_name // .name' <<<"$role")"
+    desc="$(jq -r '.description // ""' <<<"$role")"
+    printf '%s;%s;%s\n' "$id" "$name" "$desc"
+  done
+}
+
+process_role_users() {
+  local role_name="$1" role_id users_json user id name email roles_list
+
+  msg_header "Users for role: $role_name"
+
+  role_id="$(get_role_id_by_name "$role_name" || true)"
+  [[ -n "$role_id" ]] || die "Role not found: $role_name"
+
+  users_json="$(get_all_users)"
+
+  # CSV header to stdout
+  printf 'id;name;email;roles\n'
+
+  jq -c --argjson rid "$role_id" '.[] | select([.roles[]?.id] | index($rid) != null)' \
+    <<<"$users_json" | while read -r user; do
+      id="$(jq -r '.id' <<<"$user")"
+      name="$(jq -r '.name' <<<"$user")"
+      email="$(jq -r '.email' <<<"$user")"
+      roles_list="$(
+        jq -r '[.roles[]? | (.display_name // .name // ("ID:" + (.id|tostring)))] | join(",")' \
+          <<<"$user"
+      )"
+      printf '%s;%s;%s;%s\n' "$id" "$name" "$email" "$roles_list"
+    done
+}
+
+# =============================
 # CLI help text
 # =============================
 
 show_help() {
   msg_header "BookStack user & role management via API"
-  printf "%b\n" "${BOLD}Version:${RESET} 1.3.2"
-  printf "%b\n" "${BOLD}Date:${RESET} 2026-04-22"
+  printf "%b\n" "${BOLD}Version:${RESET} 1.3.3"
+  printf "%b\n" "${BOLD}Date:${RESET} 2026-04-23}"
   printf "%b\n" "${BOLD}Website:${RESET} https://www.admin-intelligence.de"
   printf "%b\n" "${BOLD}License:${RESET} MIT (SPDX-License-Identifier: MIT)"
   echo
@@ -789,7 +864,7 @@ show_help() {
   cat <<EOF
 This script manages BookStack users and roles via the REST API.
 It uses API tokens through the 'Authorization: Token <id>:<secret>' header.
-The API user must have the 'Access System API' permission. [BookStack docs]
+The API user must have the 'Access System API' permission.
 EOF
   echo
 
@@ -798,9 +873,12 @@ EOF
   role-add    - Add users to a target role (TXT or CSV)
   role-remove - Remove users from a source role (TXT or CSV)
   role-move   - Move users from a source role to a target role (TXT or CSV)
+  role-users  - List users that have a given role (CSV to stdout)
+  role-list   - List all roles (CSV to stdout)
   user-create - Create users from a CSV file (CSV only)
   user-update - Update existing users from a CSV file (CSV only)
   user-delete - Delete users from a TXT or CSV file
+  user-list   - List all users with their roles (CSV to stdout)
 EOF
   echo
 
@@ -815,6 +893,11 @@ EOF
   --log-csv <file.csv>
       Write a CSV log with timestamp, mode, status, user and role details,
       and payload for each processed entry.
+
+  --export
+      Mark this run as an export. Intended for list modes (user-list,
+      role-users) where CSV is printed to stdout. Has no effect on
+      write modes.
 
   -h | --help | -?
       Show this help.
@@ -856,6 +939,13 @@ role-add / role-remove / role-move:
   - when CSV is used, only the 'email' column is read
   - source/target roles must exist, otherwise the run aborts before changes
 
+role-users:
+  - read-only mode, lists all users that have a given role as semicolon CSV
+
+role-list:
+  - read-only mode, lists all roles as semicolon CSV
+  - columns: id;name;description
+
 user-create:
   - accepts only CSV
   - if requested roles do not exist, the user is still created
@@ -870,6 +960,9 @@ user-update:
 user-delete:
   - accepts TXT or CSV
   - when CSV is used, only the 'email' column is read
+
+user-list:
+  - read-only mode, lists all users with their roles as semicolon CSV
 EOF
   echo
 
@@ -880,7 +973,10 @@ EOF
   $(basename "$0") --dry-run user-create users.csv
   $(basename "$0") user-update users.csv
   $(basename "$0") --yes user-delete users.csv
+  $(basename "$0") user-list > all-users.csv
+  $(basename "$0") role-users "Editors" > editors-users.csv
   $(basename "$0") --log-csv log.csv role-remove "Wiki-Reader" users.csv
+  $(basename "$0") role-list > roles.csv
 EOF
 }
 
@@ -906,6 +1002,10 @@ main() {
         [[ $# -ge 2 ]] || die "--log-csv requires a file name"
         LOG_CSV="$2"
         shift 2
+        ;;
+      --export)
+        EXPORT_MODE=1
+        shift
         ;;
       -h|--help|-?)
         show_help
@@ -944,12 +1044,20 @@ main() {
       [[ $# -eq 1 ]] || die "Usage: $(basename "$0") [options] $MODE <file>"
       INPUT_FILE="$1"
       ;;
+    user-list)
+      [[ $# -eq 0 ]] || die "Usage: $(basename "$0") user-list"
+      ;;
+    role-users)
+      [[ $# -eq 1 ]] || die "Usage: $(basename "$0") role-users <role-name>"
+      TARGET_ROLE_NAME="$1"
+      ;;
+    role-list)
+      [[ $# -eq 0 ]] || die "Usage: $(basename "$0") role-list"
+      ;;
     *)
       die "Unknown mode '$MODE'. See --help."
       ;;
   esac
-
-  [[ -f "$INPUT_FILE" ]] || die "File not found: $INPUT_FILE"
 
   # Enforce CSV for create/update.
   if [[ "$MODE" == "user-create" || "$MODE" == "user-update" ]]; then
@@ -965,14 +1073,14 @@ main() {
   init_log
   api_preflight_check
 
-  # Resolve source/target roles if provided.
+  # Resolve source/target roles if provided (for role-* and role-users).
   SOURCE_ROLE_ID=""
   TARGET_ROLE_ID=""
   if [[ -n "$SOURCE_ROLE_NAME" ]]; then
     SOURCE_ROLE_ID="$(get_role_id_by_name "$SOURCE_ROLE_NAME" || true)"
     [[ -n "$SOURCE_ROLE_ID" ]] || die "Source role not found: $SOURCE_ROLE_NAME"
   fi
-  if [[ -n "$TARGET_ROLE_NAME" ]]; then
+  if [[ -n "$TARGET_ROLE_NAME" && "$MODE" != "role-users" ]]; then
     TARGET_ROLE_ID="$(get_role_id_by_name "$TARGET_ROLE_NAME" || true)"
     [[ -n "$TARGET_ROLE_ID" ]] || die "Target role not found: $TARGET_ROLE_NAME"
   fi
@@ -993,13 +1101,24 @@ main() {
   else
     msg_warn "Execution: LIVE"
   fi
+  if [[ "$EXPORT_MODE" -eq 1 ]]; then
+    msg_info "Export mode: ON (list modes print CSV to stdout)"
+  fi
   if [[ -n "$SOURCE_ROLE_NAME" ]]; then
     msg_info "Source role: $SOURCE_ROLE_NAME (ID: $SOURCE_ROLE_ID)"
   fi
-  if [[ -n "$TARGET_ROLE_NAME" ]]; then
+  if [[ -n "$TARGET_ROLE_NAME" && "$MODE" != "role-users" ]]; then
     msg_info "Target role: $TARGET_ROLE_NAME (ID: $TARGET_ROLE_ID)"
   fi
   echo
+
+  # Note: --export is informational for list modes; it has no effect on writes.
+  if [[ "$EXPORT_MODE" -eq 1 ]]; then
+    case "$MODE" in
+      user-list|role-users) ;;  # OK
+      *) msg_warn "--export has no effect on write modes." ;;
+    esac
+  fi
 
   # Dispatch to mode-specific handler.
   case "$MODE" in
@@ -1021,18 +1140,35 @@ main() {
     user-delete)
       process_user_delete_file "$INPUT_FILE"
       ;;
+    user-list)
+      process_user_list
+      ;;
+    role-users)
+      process_role_users "$TARGET_ROLE_NAME"
+      ;;
+    role-list)
+      process_role_list
+      ;;
   esac
 
-  msg_header "Summary"
-  msg_ok   "Planned/performed changes: $CHANGED_COUNT"
-  msg_warn "Skipped: $SKIPPED_COUNT"
-  msg_warn "Not found: $NOT_FOUND_COUNT"
-  if [[ "$ERROR_COUNT" -gt 0 ]]; then
-    msg_error "Errors: $ERROR_COUNT"
-    exit 1
-  else
-    msg_ok "Errors: 0"
-  fi
+  # Only summarize for modes that can change things; list-modes are read-only.
+  case "$MODE" in
+    role-add|role-remove|role-move|user-create|user-update|user-delete)
+      msg_header "Summary"
+      msg_ok   "Planned/performed changes: $CHANGED_COUNT"
+      msg_warn "Skipped: $SKIPPED_COUNT"
+      msg_warn "Not found: $NOT_FOUND_COUNT"
+      if [[ "$ERROR_COUNT" -gt 0 ]]; then
+        msg_error "Errors: $ERROR_COUNT"
+        exit 1
+      else
+        msg_ok "Errors: 0"
+      fi
+      ;;
+    user-list|role-users|role-list)
+      : # read-only: CSV output is the result
+      ;;
+  esac
 }
 
 main "$@"
